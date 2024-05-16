@@ -41,8 +41,8 @@
   (comment
    ("#" (arbno (not #\newline))) skip)
   (texto
-   ((or letter  ":" "!" "$" "_" "-" "|" "%" "&" "°" "<" ">" "^" "[" "]")
-    (arbno (or letter digit ":" "!" "$" "_" "-" "|" "%" "&" "°" "<" ">" "^" "[" "]"))) string)
+   ((or letter  ":" "!" "$" "_" "-" "|" "%" "&" "°" "<" ">" "^")
+    (arbno (or letter digit ":" "!" "$" "_" "-" "|" "%" "&" "°" "<" ">" "^"))) string)
   (identificador
    ("@" letter (arbno (or letter digit))) symbol)
   (number
@@ -66,9 +66,7 @@
     (expresion
      ("("  expresion primitiva-binaria expresion ")")
      primapp-bin-exp)
-    (expresion
-     (primitiva-unaria "("expresion ")")
-     primapp-un-exp)
+    (expresion (primitiva-unaria "("expresion ")") primapp-un-exp)
     
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
     (primitiva-binaria ("+") primitiva-suma)
@@ -80,6 +78,7 @@
     (primitiva-unaria ("longitud") primitiva-longitud)
     (primitiva-unaria ("add1") primitiva-add1)
     (primitiva-unaria ("sub1") primitiva-sub1)
+    (primitiva-unaria ("lista?") primitiva-lista?)
 
     
     ;;;;;;;;;; CONDICIONALES ;;;;;;;;;;
@@ -104,7 +103,21 @@
                recursivo-exp)
     (expresion ("true") true-exp)
     (expresion ("false") false-exp)
-    
+
+    (expresion ("lista" "("(separated-list expresion ",") ")")
+               list-exp(exps))
+
+    (expresion ("var" (separated-list identificador "=" expresion ",") "in" expresion)
+           def-var-exp)
+    (expresion ("const" (separated-list identificador "=" expresion ",") "in" expresion)
+        def-const-exp)
+    (expresion ("rec" (arbno identificador "(" (separated-list identificador ",") ")" "=" expresion)  "in" expresion) 
+                def-rec-exp)
+
+    (expresion ("begin" expresion (arbno ";" expresion) "end")
+                begin-exp)
+    (expresion ("set" identificador "=" expresion)
+                set-exp)
 
     (expresion ("\"" texto "\"") texto-lit)))
     ;;;;;;    
@@ -133,7 +146,7 @@
 ;El Interpretador (FrontEnd + Evaluación + señal para lectura )
 
 (define interpretador
-  (sllgen:make-rep-loop  "--> "
+  (sllgen:make-rep-loop  "PyGraph--> "
     (lambda (pgm) (eval-program  pgm)) 
     (sllgen:make-stream-parser 
       scanner-spec-simple-interpreter
@@ -211,7 +224,35 @@
       (recursivo-exp (proc-names idss cuerpos letrec-body)
                      (eval-expression letrec-body
                                       (extend-env-recursively proc-names idss cuerpos env)))
-      
+      (list-exp (exps)
+                    (eval-rands exps env))
+      (def-var-exp (ids rands cuerpo)
+             (let ((args (eval-rands rands env)))
+               (eval-expression cuerpo
+                                (extend-env ids args env))))
+
+      (def-const-exp (ids rands cuerpo)
+                (let ((args (eval-rands rands env)))
+                  (eval-expression cuerpo
+                                   (extend-env ids args env))))
+      (def-rec-exp (ids idss rands cuerpo)
+             (let ((procs (map cerradura idss rands env)))
+               (eval-expression cuerpo
+                                (extend-env ids procs env))))
+      (set-exp (ids exp)
+               (begin
+                 (setref!
+                  (apply-env-ref env ids)
+                  (eval-expression exp env))
+                 1))
+      (begin-exp (exp exps) 
+                 (let loop ((acc (eval-expression exp env))
+                             (exps exps))
+                    (if (null? exps) 
+                        acc
+                        (loop (eval-expression (car exps) 
+                                               env)
+                              (cdr exps)))))
      
       )))
 
@@ -242,7 +283,8 @@
     (cases primitiva-unaria prim
       (primitiva-longitud () (string-length args))
       (primitiva-add1 () (+ args 1))
-      (primitiva-sub1 () (- args 1)))))
+      (primitiva-sub1 () (- args 1))
+      (primitiva-lista? () (list? args)))))
 
 ;true-value?: determina si un valor dado corresponde a un valor booleano falso o verdadero
 (define true-value?
@@ -269,16 +311,14 @@
 ;*******************************************************************************************
 ;Ambientes
 
+
 ;definición del tipo de dato ambiente
 (define-datatype environment environment?
-  (vacio)
-  (extendido (syms (list-of symbol?))
-                       (vals (list-of scheme-value?))
-                       (env environment?))
-  (recursively-extendido (proc-names (list-of symbol?))
-                                   (idss (list-of (list-of symbol?)))
-                                   (bodies (list-of expresion?))
-                                   (env environment?)))
+  (empty-env-record)
+  (extended-env-record
+   (syms (list-of symbol?))
+   (vec vector?)
+   (env environment?)))
 
 (define scheme-value? (lambda (v) #t))
 
@@ -286,41 +326,62 @@
 ;función que crea un ambiente vacío
 (define empty-env  
   (lambda ()
-    (vacio)))       ;llamado al constructor de ambiente vacío 
+    (empty-env-record)))       ;llamado al constructor de ambiente vacío 
 
 
 ;extend-env: <list-of symbols> <list-of numbers> enviroment -> enviroment
 ;función que crea un ambiente extendido
 (define extend-env
   (lambda (syms vals env)
-    (extendido syms vals env)))
+    (extended-env-record syms (list->vector vals) env)))
 
 ;extend-env-recursively: <list-of symbols> <list-of <list-of symbols>> <list-of expressions> environment -> environment
 ;función que crea un ambiente extendido para procedimientos recursivos
 (define extend-env-recursively
   (lambda (proc-names idss bodies old-env)
-    (recursively-extendido
-     proc-names idss bodies old-env)))
+    (let ((len (length proc-names)))
+      (let ((vec (make-vector len)))
+        (let ((env (extended-env-record proc-names vec old-env)))
+          (for-each
+            (lambda (pos ids body)
+              (vector-set! vec pos (cerradura ids body env)))
+            (iota len) idss bodies)
+          env)))))
 
+;iota: number -> list
+;función que retorna una lista de los números desde 0 hasta end
+(define iota
+  (lambda (end)
+    (let loop ((next 0))
+      (if (>= next end) '()
+        (cons next (loop (+ 1 next)))))))
+
+;(define iota
+;  (lambda (end)
+;    (iota-aux 0 end)))
+;
+;(define iota-aux
+;  (lambda (ini fin)
+;    (if (>= ini fin)
+;        ()
+;        (cons ini (iota-aux (+ 1 ini) fin)))))
 
 ;función que busca un símbolo en un ambiente
 (define apply-env
   (lambda (env sym)
+    (deref (apply-env-ref env sym))))
+     ;(apply-env-ref env sym)))
+    ;env))
+(define apply-env-ref
+  (lambda (env sym)
     (cases environment env
-      (vacio ()
-                        (eopl:error 'empty-env "No binding for ~s" sym))
-      (extendido (syms vals old-env)
-                           (let ((pos (list-find-position sym syms)))
+      (empty-env-record ()
+                        (eopl:error 'apply-env-ref "No binding for ~s" sym))
+      (extended-env-record (syms vals env)
+                           (let ((pos (rib-find-position sym syms)))
                              (if (number? pos)
-                                 (list-ref vals pos)
-                                 (apply-env old-env sym))))
-      (recursively-extendido (proc-names idss bodies old-env)
-                                       (let ((pos (list-find-position sym proc-names)))
-                                         (if (number? pos)
-                                             (cerradura (list-ref idss pos)
-                                                      (list-ref bodies pos)
-                                                      env)
-                                             (apply-env old-env sym)))))))
+                                 (a-ref pos vals)
+                                 (apply-env-ref env sym)))))))
 
 
 ;****************************************************************************************
@@ -328,6 +389,37 @@
 
 ; funciones auxiliares para encontrar la posición de un símbolo
 ; en la lista de símbolos de unambiente
+(define rib-find-position 
+  (lambda (sym los)
+    (list-find-position sym los)))
+
+(define primitive-setref!
+  (lambda (ref val)
+    (cases reference ref
+      (a-ref (pos vec)
+             (vector-set! vec pos val)))))
+
+(define-datatype reference reference?
+  (a-ref (position integer?)
+         (vec vector?)))
+
+(define primitive-deref
+  (lambda (ref)
+    (cases reference ref
+      (a-ref (pos vec)
+             (vector-ref vec pos)))))
+
+(define deref
+  (lambda (ref)
+    (primitive-deref ref)))
+
+(define setref!
+  (lambda (ref val)
+    (primitive-setref! ref val)))
+
+(define const? 
+  (lambda (sym syms)
+    (member sym syms)))
 
 (define list-find-position
   (lambda (sym los)
@@ -425,4 +517,3 @@
 ;  ) {
 ;      declarar (@decorate = procedimiento (@var) haga (evaluar @saludar (@integrantes) finEval concat @var) finProc){
 ; evaluar @decorate ("-ProfesoresFLP") finEval }}
-
