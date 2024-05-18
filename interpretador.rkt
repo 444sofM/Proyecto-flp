@@ -158,6 +158,7 @@
            ref-registro-exp)
     (expresion ("set-registro" expresion identificador expresion)
            set-registro-exp)
+;;Grafos
 
     (expresion ("grafo" "(" expresion expresion ")")
            grafo-exp)
