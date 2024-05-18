@@ -439,7 +439,8 @@
       (primitiva-multi () (* (car args) (cadr args)))
       (primitiva-div () (/ (car args) (cadr args)))
       (primitiva-mod () (remainder (car args) (cadr args)))
-      (primitiva-concat () (string-append (car args) (cadr args))))))
+      (primitiva-concat () (string-append (objeto->string (car args))
+                                           (objeto->string (cadr args)))))))
 
 (define apply-primitiva-unaria
   (lambda (prim args)
@@ -555,8 +556,14 @@
 ;Funciones Auxiliares
 
 ; funciones auxiliares para encontrar la posición de un símbolo
-; en la lista de símbolos de unambiente
+; en la lista de símbolos de un ambiente
 
+(define objeto->string
+  (lambda (obj)
+    (cond
+      ((string? obj) obj)
+      ((number? obj) (number->string obj))
+      (else (eopl:error 'objeto->string "Tipo de objeto no soportado: ~s" obj)))))
 
 (define eliminar-duplicados-y-ordenar
   (lambda (aristas)
